@@ -1,0 +1,28 @@
+# --- Python - pliki systemowe ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Wirtualne środowisko (BARDZO WAŻNE) ---
+# Nie wysyłamy bibliotek, bo mamy requirements.txt
+venv/
+env/
+.env
+
+# --- Jupyter Notebook ---
+# Tymczasowe pliki zapisu
+.ipynb_checkpoints/
+
+# --- MacOS - pliki śmieciowe ---
+.DS_Store
+
+# --- Dane Projektu RL ---
+# Modele i logi zajmują dużo miejsca i zmieniają się co trening.
+# Zazwyczaj nie wrzuca się ich do repozytorium.
+models/
+logs/
+*.zip
+
+# --- IDE (Ustawienia edytora) ---
+.vscode/
+.idea/

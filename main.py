@@ -2,133 +2,163 @@ import gymnasium as gym
 import highway_env
 import numpy as np
 from stable_baselines3 import PPO
+from stable_baselines3.common.evaluation import evaluate_policy
 import os
 
 
-# --- KROK 1: MODYFIKACJA ŚRODOWISKA (WRAPPER) ---
-class SpeedDemonWrapper(gym.Wrapper):
+# --- PART 1: CUSTOM ENVIRONMENT WRAPPER (Milestone 1) ---
+class BalancedDriverWrapper(gym.Wrapper):
     """
-    Modyfikacja środowiska "Pirat Drogowy".
-    Agent dostaje dodatkową nagrodę TYLKO za utrzymywanie bardzo wysokiej prędkości.
-    Ignorujemy standardowe nagrody za bezpieczną jazdę.
+    Custom Environment Modification: "Fast but Cautious".
+    - High penalty for crashes remains (Safety first).
+    - Reduced pressure to maintain maximum speed constantly.
+    - Encourages smooth traffic flow.
     """
 
     def __init__(self, env):
         super().__init__(env)
 
     def step(self, action):
-        # Wykonujemy krok w oryginalnym środowisku
+        # Execute action in the original environment
         obs, reward, terminated, truncated, info = self.env.step(action)
 
-        # --- MOJA MODYFIKACJA NAGRODY ---
-        # Pobieramy prędkość z informacji zwrotnej (info)
-        # W highway-env prędkość jest w m/s (zakładamy, że > 25 m/s to szybko)
         speed = info['speed']
+        custom_reward = 0.0
 
-        # Nowa funkcja nagrody:
-        # Jeśli jedzie szybko (> 25 m/s) -> Duży bonus
-        # Jeśli jedzie wolno -> Kara (ujemna nagroda)
-        # Jeśli się rozbił (crashed) -> Ogromna kara
-
-        custom_reward = 0
+        # 1. Priority: SAFETY
         if info['crashed']:
-            custom_reward = -10.0
-        elif speed > 25:
-            custom_reward = 2.0  # Bonus za bycie piratem
-        else:
-            custom_reward = -0.5  # Kara za bycie "zawalidrogą"
+            custom_reward = -40.0  # Heavy penalty, but allows agent to keep "hope"
+            terminated = True  # Crash ends the episode
 
-        # Zwracamy zmodyfikowaną nagrodę
+        else:
+            # 2. Speed Reward
+            # Encourage driving, but gently scaled
+            custom_reward += (speed / 30.0) * 0.5
+
+            # 3. REDUCED Speed Pressure
+            # Only penalize for driving too slow (traffic obstruction)
+            # Previously < 20, now < 10 to allow braking in traffic
+            if speed < 10:
+                custom_reward -= 0.1
+
+            # 4. Survival/Smoothness Bonus
+            # Reward for every step survived without crashing
+            custom_reward += 0.2
+
         return obs, custom_reward, terminated, truncated, info
 
 
-# --- KROK 2: FUNKCJA TRENINGOWA ---
+# --- PART 2: ENVIRONMENT CONFIGURATION (Milestone 1) ---
+def create_env(render_mode="rgb_array"):
+    """
+    Creates and configures the Highway environment with balanced difficulty.
+    """
+    env = gym.make("highway-fast-v0", render_mode=render_mode)
+
+    # Configuration: "The Golden Mean"
+    env.unwrapped.configure({
+        "lanes_count": 4,  # 4 lanes
+        "vehicles_count": 30,  # Reduced from 50 (less chaotic traffic)
+        "duration": 150,  # Optimal duration
+        "initial_spacing": 4,  # Increased spacing (safer start)
+        "vehicles_density": 1.5,  # Medium density (challenging but fair)
+        "collision_reward": -1,  # (Overwritten by wrapper)
+        "reward_speed_range": [20, 30],
+        # Centering view - agent sees more around itself
+        "centering_position": [0.3, 0.5],
+    })
+
+    # Apply custom reward logic
+    env = BalancedDriverWrapper(env)
+    return env
+
+
+# --- PART 3: TRAINING & EVALUATION (Milestone 2 & 3) ---
 def train_agent():
-    # Tworzymy folder na modele
+    # Setup directories
     models_dir = "models/PPO"
     log_dir = "logs"
     os.makedirs(models_dir, exist_ok=True)
     os.makedirs(log_dir, exist_ok=True)
 
-    # 1. Tworzymy środowisko
-    env_name = "highway-fast-v0"
-    env = gym.make(env_name, render_mode="rgb_array")
+    # 1. Create Training Environment
+    env = create_env()
 
-    # 2. Nakładamy naszą modyfikację (Wrapper)
-    env = SpeedDemonWrapper(env)
-    print(f"Środowisko {env_name} uruchomione z modyfikacją 'SpeedDemon'.")
+    # 2. Hyperparameters (Tuned for stability)
+    learning_rate = 0.0003
+    ent_coef = 0.01
 
-    # 3. Inicjalizujemy Agenta (PPO)
-    # MlpPolicy to standardowa sieć neuronowa
-    model = PPO("MlpPolicy", env, verbose=1)
+    print("--- Initializing Agent ---")
+    model = PPO(
+        "MlpPolicy",
+        env,
+        verbose=1,
+        learning_rate=learning_rate,
+        ent_coef=ent_coef,
+        # tensorboard_log=log_dir # Uncomment if tensorboard is installed
+    )
 
-    print("Rozpoczynam trening (to może chwilę potrwać)...")
-
-    # Trenujemy przez 10,000 kroków (w prawdziwym projekcie daj więcej, np. 50k lub 100k)
-    TIMESTEPS = 100000
+    print("--- Starting Training (Balanced Strategy) ---")
+    # 30k steps is enough to see results with this balance
+    TIMESTEPS = 70000
     model.learn(total_timesteps=TIMESTEPS)
 
-    # Zapisujemy model
-    model_path = f"{models_dir}/{env_name}_speed_demon"
+    # Save Model
+    model_path = f"{models_dir}/balanced_driver_ppo"
     model.save(model_path)
-    print(f"Model zapisany w: {model_path}")
+    print(f"Model saved to: {model_path}")
 
-    return model, env
+    # 3. Evaluate Results
+    print("--- Evaluating Trained Agent ---")
+    mean_reward, std_reward = evaluate_policy(model, env, n_eval_episodes=5)
+    print(f"Trained Mean Reward: {mean_reward:.2f} +/- {std_reward:.2f}")
+
+    return model
 
 
-# --- KROK 3: FUNKCJA TESTUJĄCA (WIZUALIZACJA) ---
-def test_agent(model):
-    print("Rozpoczynam test wizualny (Wydłużony)...")
+# --- PART 4: VISUALIZATION ---
+def test_agent_visual(model):
+    print("--- Starting Visual Test ---")
 
-    # Tworzymy środowisko
-    env = gym.make("highway-fast-v0", render_mode="human")
+    # Create environment for human viewing
+    env = create_env(render_mode="human")
 
-    # --- NOWOŚĆ: KONFIGURACJA CZASU TRWANIA ---
-    # Odwołujemy się do "wnętrza" środowiska (unwrapped), żeby zmienić ustawienia
+    # Configure display for smoother viewing
     env.unwrapped.configure({
-        "duration": 200,  # Czas trwania epizodu (zwiększony z 40 do 200!)
-        "simulation_frequency": 15,  # Liczba klatek na sekundę (płynność)
-        "policy_frequency": 1,  # Jak często agent podejmuje decyzję
+        "simulation_frequency": 15,
+        "policy_frequency": 2,  # Decisions every 2 frames (more human-like)
     })
-
-    # Ważne: Nakładamy Wrapper (musi być taki sam jak w treningu)
-    env = SpeedDemonWrapper(env)
 
     obs, _ = env.reset()
 
-    # Zmniejszyłem liczbę epizodów do 3, bo teraz będą dłuższe
-    for i in range(10):
+    for i in range(5):
         done = False
-        print(f"--- Epizod {i + 1} START ---")
+        total_score = 0
+        print(f"--- Episode {i + 1} START ---")
 
         while not done:
-            # Agent decyduje co zrobić
-            action, _states = model.predict(obs, deterministic=True)
+            # Deterministic=True means use the best learned strategy
+            action, _ = model.predict(obs, deterministic=True)
 
-            # Wykonanie akcji
             obs, reward, terminated, truncated, info = env.step(action)
-            env.render()  # Pokaż na ekranie
+            env.render()
 
-            # Sprawdź czy koniec (wypadek lub koniec czasu)
+            total_score += reward
             done = terminated or truncated
 
-            # Jeśli był wypadek, wypisz info w konsoli
             if info.get('crashed'):
-                print(f"Kraksa w epizodzie {i + 1}!")
+                print(f" -> Crash! Speed: {info['speed']:.1f}")
 
-        print(f"Epizod {i + 1} zakończony.")
+        print(f"Episode {i + 1} Finished. Score: {total_score:.2f}")
         obs, _ = env.reset()
 
     env.close()
 
 
-# --- GŁÓWNA PĘTLA ---
+# --- MAIN EXECUTION ---
 if __name__ == "__main__":
-    # 1. Trenuj
-    trained_model, training_env = train_agent()
+    trained_model = train_agent()
 
-    # 2. Testuj
-    # Pytamy użytkownika, czy chce zobaczyć wynik
-    odp = input("Trening zakończony. Czy chcesz zobaczyć jak jeździ agent? (t/n): ")
-    if odp.lower() == 't':
-        test_agent(trained_model)
+    user_input = input("Training complete. Watch the agent drive? (y/n): ")
+    if user_input.lower() == 'y':
+        test_agent_visual(trained_model)
