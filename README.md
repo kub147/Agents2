@@ -30,6 +30,7 @@ We have customized the environment rewards to create a "Balanced Driver" persona
 To train the agent and see the results, run:
 ```bash
 python main.py
+```
 
 # To-Do List & Task Distribution (Remaining 2 Weeks)
 
